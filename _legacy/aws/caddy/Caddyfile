@@ -1,0 +1,59 @@
+# ============================================================
+#  Bridge — Caddyfile for bridge.globantislabs.com
+#  Caddy = single binary, automatic HTTPS via Let's Encrypt,
+#  HTTP/2 + HTTP/3, ~30MB RAM. Perfect for t3.nano (0.5GB).
+# ============================================================
+
+bridge.globantislabs.com {
+    # ---------- Reverse proxy to Next.js ----------
+    reverse_proxy bridge:3000 {
+        # Forward real client IP
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # WebSocket support (for WebRTC signaling, hot reload)
+        # Caddy handles Upgrade/Connection headers automatically.
+
+        # Healthy upstream
+        transport http {
+            read_timeout 300s
+            write_timeout 300s
+            dial_timeout 5s
+        }
+    }
+
+    # ---------- Security headers ----------
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
+        -Server
+    }
+
+    # ---------- Rate limiting (lightweight, in-process) ----------
+    # Caddy 2.7+ supports rate_limit plugin — but for t3.nano keep it simple.
+    # The app's own rate limiting handles /api/auth/* bursts.
+
+    # ---------- Compression ----------
+    encode gzip zstd
+
+    # ---------- Logging ----------
+    log {
+        output file /data/access.log {
+            roll_size 50mb
+            roll_keep 3
+            roll_keep_for 168h
+        }
+        format json
+    }
+}
+
+# ---------- HTTP redirect (Caddy does this automatically when HTTPS block exists,
+# but we make it explicit to catch bare-IP and www variants too) ----------
+:80 {
+    redir https://bridge.globantislabs.com{uri} permanent
+}

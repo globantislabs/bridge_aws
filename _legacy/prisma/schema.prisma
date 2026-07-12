@@ -1,0 +1,604 @@
+// Prisma schema for the Meeting + Mail + Translation platform
+// Backend: PostgreSQL (Supabase).
+//   Set DATABASE_URL to your Supabase connection string. Either works:
+//     Direct: postgresql://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
+//     Pooler: postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+//   If your network blocks IPv6 (common on some ISPs), the pooler URL (IPv4) will work
+//   when the direct URL fails. URL-encode special chars in the password: @ → %40, etc.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // directUrl is used for migrations (allows DDL even when DATABASE_URL is a pooler)
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  passwordHash  String?
+  avatarUrl     String?
+  role          String   @default("user") // user | admin
+  locale        String   @default("en")
+  status        String   @default("active") // active | suspended | banned
+  title          String? // job title
+  company        String?
+  timezone       String   @default("UTC")
+  bio            String?
+  // OAuth integration (Google via Supabase Auth)
+  provider       String?  // "google" | "email" | "supabase"
+  providerId     String?  // unique id from OAuth provider
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([provider, providerId])
+
+  meetings        Meeting[]         @relation("MeetingHost")
+  participations  MeetingParticipant[]
+  emails          Email[]           @relation("EmailOwner")
+  emailsSent      Email[]           @relation("EmailSender")
+  apiTokens       ApiToken[]
+  subscriptions   Subscription[]
+  transcriptMsgs  TranscriptMessage[]
+  invoices        Invoice[]
+  activityLogs    ActivityLog[]
+  preferences     UserPreference?
+  signatures      EmailSignature[]
+  filters         EmailFilter[]
+  vacation        VacationResponder?
+  notifications   Notification[]
+  meetingChats    MeetingChat[]
+  meetingPolls    MeetingPoll[]
+  meetingPollVotes MeetingPollVote[]
+  meetingReactions MeetingReaction[]
+  breakoutMembers BreakoutMember[]
+  scheduledEmails ScheduledEmail[]
+  contacts        Contact[]
+  orgMemberships  OrganizationMember[]
+  ownedOrgs       Organization[]     @relation("OrgOwner")
+  sessions        Session[]
+  twoFactor       TwoFactorSecret?
+}
+
+/// B2B organization — owns subscriptions, members, and shared API tokens.
+/// A user can belong to multiple orgs (member of one, admin of another, etc.).
+/// B2C users have no org membership — their subscription is user-owned.
+model Organization {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique
+  ownerId       String
+  domain        String?  // e.g. "acme.com" — used for auto-join on signup
+  status        String   @default("active") // active | suspended
+  billingEmail  String?
+  size          String   @default("1-10") // 1-10 | 11-50 | 51-200 | 201-1000 | 1000+
+  audience      String   @default("b2b")   // b2b | b2c | both
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  owner         User     @relation("OrgOwner", fields: [ownerId], references: [id])
+  members       OrganizationMember[]
+  subscriptions Subscription[]
+  invoices      Invoice[]
+  apiTokens     ApiToken[]
+
+  @@index([ownerId])
+}
+
+model OrganizationMember {
+  id            String   @id @default(cuid())
+  orgId         String
+  userId        String
+  role          String   @default("member") // owner | admin | member
+  invitedEmail  String?
+  joinedAt      DateTime @default(now())
+
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+model UserPreference {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  theme         String   @default("light")
+  density       String   @default("comfortable") // comfortable | compact
+  fontScale     String   @default("medium") // small | medium | large
+  notifEmail    Boolean  @default(true)
+  notifPush     Boolean  @default(true)
+  notifMeeting  Boolean  @default(true)
+  notifWeekly   Boolean  @default(false)
+  autoTranslate Boolean  @default(true)
+  preferredLangs String  @default("en,es,fr,de,ja,zh,hi")
+  showCaptions  Boolean  @default(true)
+  captionSize   String   @default("medium")
+  audioEcho     Boolean  @default(true)
+  audioNoise    Boolean  @default(true)
+  videoMirror   Boolean  @default(true)
+  videoFps      Int      @default(30)
+  videoQuality  String   @default("auto")
+  updatedAt     DateTime @updatedAt
+
+  user          User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Meeting {
+  id            String   @id @default(cuid())
+  title         String
+  description   String?
+  hostId        String
+  status        String   @default("scheduled") // scheduled | live | ended
+  startAt       DateTime
+  endAt         DateTime?
+  joinCode      String   @unique
+  passcode      String?  // optional meeting passcode
+  waitingRoom   Boolean  @default(false)
+  recordingUrl  String?
+  isRecording   Boolean  @default(false)
+  recordStartedAt DateTime?
+  transcriptLang String  @default("en")
+  targetLangs   String   @default("en,es,fr,de,ja,zh,hi")
+  maxParticipants Int    @default(50)
+  allowScreenShare Boolean @default(true)
+  allowRecording Boolean @default(true)
+  allowChat     Boolean  @default(true)
+  allowReactions Boolean @default(true)
+  e2ee          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  host          User                @relation("MeetingHost", fields: [hostId], references: [id])
+  participants  MeetingParticipant[]
+  transcripts   TranscriptMessage[]
+  chats         MeetingChat[]
+  polls         MeetingPoll[]
+  reactions     MeetingReaction[]
+  breakouts     BreakoutRoom[]
+  signals       MeetingSignal[]
+}
+
+model MeetingParticipant {
+  id          String   @id @default(cuid())
+  meetingId   String
+  userId      String?
+  displayName String
+  role        String   @default("participant") // host | cohost | participant
+  joinedAt    DateTime?
+  leftAt      DateTime?
+  audioOn     Boolean  @default(false)
+  videoOn     Boolean  @default(false)
+  handRaised  Boolean  @default(false)
+  handRaisedAt DateTime?
+  isPinned    Boolean  @default(false)
+  isMuted     Boolean  @default(false)
+  networkQuality Int   @default(4)
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user        User?   @relation(fields: [userId], references: [id])
+}
+
+model TranscriptMessage {
+  id          String   @id @default(cuid())
+  meetingId   String
+  userId      String?
+  speakerName String
+  sourceLang  String
+  sourceText  String
+  targetLang  String
+  targetText  String
+  confidence  Float    @default(0.95)
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user        User?   @relation(fields: [userId], references: [id])
+}
+
+model MeetingChat {
+  id          String   @id @default(cuid())
+  meetingId   String
+  userId      String?
+  displayName String
+  message     String
+  translated  String?  // optional translation
+  targetLang  String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user        User?   @relation(fields: [userId], references: [id])
+
+  @@index([meetingId, createdAt])
+}
+
+model MeetingPoll {
+  id          String   @id @default(cuid())
+  meetingId   String
+  userId      String
+  question    String
+  optionsJson String   // JSON array of strings
+  allowMultiple Boolean @default(false)
+  isClosed    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user        User @relation(fields: [userId], references: [id])
+  votes       MeetingPollVote[]
+
+  @@index([meetingId])
+}
+
+model MeetingPollVote {
+  id          String   @id @default(cuid())
+  pollId      String
+  userId      String
+  optionIdx   Int
+  createdAt   DateTime @default(now())
+
+  poll        MeetingPoll @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  user        User @relation(fields: [userId], references: [id])
+
+  @@unique([pollId, userId, optionIdx])
+}
+
+model MeetingReaction {
+  id          String   @id @default(cuid())
+  meetingId   String
+  userId      String?
+  displayName String
+  emoji       String
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user        User?   @relation(fields: [userId], references: [id])
+
+  @@index([meetingId, createdAt])
+}
+
+model BreakoutRoom {
+  id          String   @id @default(cuid())
+  meetingId   String
+  name        String
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  members     BreakoutMember[]
+}
+
+model BreakoutMember {
+  id          String   @id @default(cuid())
+  breakoutId  String
+  userId      String
+  isLeader    Boolean  @default(false)
+
+  breakout    BreakoutRoom @relation(fields: [breakoutId], references: [id], onDelete: Cascade)
+  user        User @relation(fields: [userId], references: [id])
+}
+
+model MeetingSignal {
+  // WebRTC signaling messages exchanged between peers via server polling
+  id          String   @id @default(cuid())
+  meetingId   String
+  fromPeer    String
+  toPeer      String
+  type        String   // offer | answer | ice | leave | join
+  payload     String   // JSON blob (SDP / ICE / etc.)
+  createdAt   DateTime @default(now())
+
+  meeting     Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId, toPeer, createdAt])
+  @@index([createdAt])
+}
+
+model Email {
+  id          String   @id @default(cuid())
+  ownerId     String
+  senderId    String?
+  threadId    String
+  fromAddr    String
+  toAddr      String
+  ccAddr      String?
+  bccAddr     String?
+  subject     String
+  bodyPlain   String
+  bodyHtml    String?
+  snippet     String
+  isRead      Boolean  @default(false)
+  isStarred   Boolean  @default(false)
+  isDraft     Boolean  @default(false)
+  isSent      Boolean  @default(false)
+  isTrashed   Boolean  @default(false)
+  isImportant Boolean  @default(false)
+  labelsCsv   String   @default("")
+  folder      String   @default("inbox") // inbox | sent | drafts | trash | archive | spam
+  attachmentsJson String @default("[]")
+  sentAt      DateTime?
+  receivedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User @relation("EmailOwner", fields: [ownerId], references: [id])
+  sender      User? @relation("EmailSender", fields: [senderId], references: [id])
+
+  @@index([ownerId, folder])
+  @@index([threadId])
+  @@index([isStarred])
+  @@index([isImportant])
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  ownerId     String
+  email       String
+  name        String
+  notes       String?
+  starred     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, email])
+}
+
+model EmailFilter {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  fromContains String?
+  subjectContains String?
+  bodyContains  String?
+  hasAttachment Boolean @default(false)
+  actionFolder String  @default("inbox") // target folder
+  actionLabel  String?
+  actionStar   Boolean @default(false)
+  actionImportant Boolean @default(false)
+  priority     Int     @default(0)
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
+
+  owner       User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model EmailSignature {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  body        String
+  isDefault   Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model VacationResponder {
+  id          String   @id @default(cuid())
+  ownerId     String   @unique
+  enabled     Boolean  @default(false)
+  subject     String   @default("Out of office")
+  body        String
+  startDate   DateTime?
+  endDate     DateTime?
+  updatedAt   DateTime @updatedAt
+
+  owner       User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model ScheduledEmail {
+  id          String   @id @default(cuid())
+  ownerId     String
+  toAddr      String
+  ccAddr      String?
+  bccAddr     String?
+  subject     String
+  body        String
+  signatureId String?
+  sendAt      DateTime
+  status      String   @default("scheduled") // scheduled | sent | cancelled
+  sentEmailId String?
+  createdAt   DateTime @default(now())
+
+  owner       User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model Plan {
+  id              String   @id @default(cuid())
+  name            String
+  tier            String   @unique
+  priceMonthly    Int
+  priceYearly     Int
+  currency        String   @default("usd")
+  meetingMinutes  Int
+  maxParticipants Int
+  translationLangs Int
+  apiTokens       Int
+  storageGb       Int
+  featuresCsv     String
+  audience        String   @default("both") // b2b | b2c | both — controls which signup flows see it
+  isActive        Boolean  @default(true)
+  isFeatured      Boolean  @default(false) // highlighted on the pricing page
+  sortOrder       Int      @default(0)     // lower = first in pricing grid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  subscriptions   Subscription[]
+  invoices        Invoice[]
+}
+
+model Subscription {
+  id              String   @id @default(cuid())
+  userId          String
+  orgId           String?  // when set, this is a B2B org subscription
+  planId          String
+  status          String   @default("active") // active | trialing | past_due | canceled
+  interval        String   @default("monthly") // monthly | yearly
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+  stripeSubId     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User @relation(fields: [userId], references: [id])
+  org             Organization? @relation(fields: [orgId], references: [id])
+  plan            Plan @relation(fields: [planId], references: [id])
+
+  @@index([orgId])
+  @@index([userId, status])
+}
+
+model Invoice {
+  id              String   @id @default(cuid())
+  userId          String
+  orgId           String?  // B2B invoices are tied to the org
+  planId          String
+  amount          Int
+  currency        String   @default("usd")
+  status          String   @default("paid") // draft | open | paid | void
+  number          String   @unique
+  issuedAt        DateTime @default(now())
+  periodStart     DateTime
+  periodEnd       DateTime
+  pdfUrl          String?
+
+  user            User @relation(fields: [userId], references: [id])
+  org             Organization? @relation(fields: [orgId], references: [id])
+  plan            Plan @relation(fields: [planId], references: [id])
+
+  @@index([orgId])
+}
+
+model ApiToken {
+  id            String   @id @default(cuid())
+  userId        String
+  orgId         String?  // B2B tokens belong to the org, not the user
+  name          String
+  tokenPrefix   String
+  keyHash       String
+  scopesCsv     String   @default("meetings:read,meetings:write,transcript:read")
+  quotaMinutes  Int      @default(1000)
+  usedMinutes   Int      @default(0)
+  requestCount  Int      @default(0)
+  rateLimitPerMin Int    @default(60)
+  lastUsedAt    DateTime?
+  lastUsedIp    String?
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User @relation(fields: [userId], references: [id])
+  org           Organization? @relation(fields: [orgId], references: [id])
+
+  @@index([orgId])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  action      String
+  metaJson    String   @default("{}")
+  ipAddress   String?
+  severity    String   @default("info") // info | warn | error
+  createdAt   DateTime @default(now())
+
+  user        User? @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([severity, createdAt])
+}
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/// Multi-provider API key vault. The super-admin adds API keys from any
+/// provider (OpenAI, Deepgram, Azure, Google, ElevenLabs, Anthropic,
+/// Whisper, custom HTTP). Only one provider per `type` can be `isPrimary`
+/// at a time. `apiKeyMasked` is the safe-to-display prefix+suffix string;
+/// the full key is stored in `apiKeyEnc` (rot13 placeholder — swap for AES
+/// in production).
+model ApiProvider {
+  id            String   @id @default(cuid())
+  type          String   // openai_realtime | openai_translate | deepgram | azure_speech | google_stt | elevenlabs | whisper | anthropic | custom
+  label         String
+  apiKeyEnc     String   // obfuscated key (server-only access)
+  apiKeyMasked  String   // safe to expose to UI — first 4 + last 4 chars
+  model         String?
+  endpoint      String?
+  isActive      Boolean  @default(true)
+  isPrimary     Boolean  @default(false)
+  requestCount  Int      @default(0)
+  errorCount    Int      @default(0)
+  avgLatencyMs  Int      @default(0)
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([type, isPrimary])
+  @@index([isActive])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // meeting | email | billing | system | token
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+/// DB-backed session — replaces the in-memory globalThis.__sessions Map.
+/// One row per active login. Deleted on logout, expired by the cron job.
+/// Works across multiple server instances (unlike the in-memory Map).
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique // 64-char hex random
+  userId    String
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime? // soft-revoke (logout)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// TOTP secret for two-factor auth. One per user. Created during 2FA setup,
+/// verified on subsequent logins. `confirmedAt` is null until the user
+/// successfully verifies a TOTP code after scanning the QR — until then,
+/// 2FA is NOT enforced on login.
+model TwoFactorSecret {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  secretEnc   String    // obfuscated TOTP secret (server-only)
+  backupCodes String    // JSON array of hashed backup codes
+  confirmedAt DateTime? // null = pending setup, set = active
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

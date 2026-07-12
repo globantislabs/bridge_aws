@@ -1,0 +1,77 @@
+# ============================================================
+#  Bridge — AWS Production docker-compose
+#  Domain: bridge.globantislabs.com
+#  Stack:  bridge (Next.js) + nginx (TLS reverse proxy) + certbot (Let's Encrypt)
+# ============================================================
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.aws
+    image: bridge:aws
+    container_name: bridge-app
+    restart: unless-stopped
+    expose:
+      - "3000"
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+    networks:
+      - bridge-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: bridge-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./aws/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./aws/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./aws/certbot/www:/var/www/certbot:ro
+      - ./aws/certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - bridge
+    networks:
+      - bridge-net
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: bridge-certbot
+    # Auto-renew every 12h; certbot only renews certs within 30 days of expiry.
+    entrypoint: >
+      /bin/sh -c "trap exit TERM;
+      while :; do certbot renew --webroot -w /var/www/certbot --quiet;
+      sleep 12h & wait $${!}; done;"
+    volumes:
+      - ./aws/certbot/www:/var/www/certbot
+      - ./aws/certbot/conf:/etc/letsencrypt
+    networks:
+      - bridge-net
+
+  # Optional: coturn TURN server for WebRTC NAT traversal.
+  # Uncomment + set TURN_URL=turn:bridge.globantislabs.com:3478 in .env.production
+  # AND open ports 3478/udp + 49152-65535/udp in the EC2 security group.
+  # turn:
+  #   image: coturn/coturn:latest
+  #   container_name: bridge-turn
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   volumes:
+  #     - ./aws/turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+  #   command: ["-c", "/etc/coturn/turnserver.conf"]
+
+networks:
+  bridge-net:
+    driver: bridge

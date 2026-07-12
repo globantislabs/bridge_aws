@@ -1,0 +1,83 @@
+/* App-specific tweaks that must not live in tailwind config */
+
+.h-brand {
+  font-family: "Outfit", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+.dot-grid {
+  background-image: radial-gradient(var(--c-border) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.gradient-cyan-line {
+  background: linear-gradient(90deg, transparent, var(--c-active), transparent);
+  height: 1px;
+  width: 100%;
+  opacity: 0.6;
+}
+
+.btn-primary {
+  background: var(--c-btn-primary);
+  color: var(--c-btn-primary-text);
+  border-radius: 999px;
+  padding: 12px 22px;
+  font-weight: 600;
+  transition: transform 120ms ease, background-color 200ms ease;
+}
+.btn-primary:hover { background: var(--c-btn-primary-hover); }
+.btn-primary:active { transform: scale(0.97); }
+
+.btn-ghost {
+  background: var(--c-milled);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  border-radius: 999px;
+  padding: 10px 20px;
+  transition: background-color 200ms ease, transform 120ms ease;
+}
+.btn-ghost:hover { background: var(--c-milled-hover); }
+.btn-ghost:active { transform: scale(0.97); }
+
+.input-field {
+  background: var(--c-input);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding-top: 12px;
+  padding-right: 14px;
+  padding-bottom: 12px;
+  padding-left: 14px;
+  color: var(--c-text);
+  width: 100%;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.input-field:focus {
+  outline: none;
+  border-color: var(--c-border-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-active) 22%, transparent);
+}
+.input-field::placeholder { color: var(--c-text-faint); }
+
+/* Reserve space on the left for an icon absolutely positioned inside the field. */
+.input-field.with-icon { padding-left: 44px; }
+
+.ctrl-btn {
+  height: 48px;
+  min-width: 48px;
+  padding: 0 14px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--c-milled);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  transition: background-color 200ms ease, transform 120ms ease, border-color 200ms ease;
+}
+.ctrl-btn:hover { background: var(--c-milled-hover); }
+.ctrl-btn:active { transform: scale(0.96); }
+.ctrl-btn.danger { background: var(--c-signal); border-color: var(--c-signal); color: #fff; }
+.ctrl-btn.danger:hover { background: color-mix(in srgb, var(--c-signal) 88%, black); }
+.ctrl-btn.active { background: var(--c-active); color: var(--c-btn-primary-text); border-color: var(--c-active); }
+.ctrl-btn.muted { background: color-mix(in srgb, var(--c-signal) 20%, transparent); border-color: color-mix(in srgb, var(--c-signal) 40%, transparent); color: var(--c-signal); }

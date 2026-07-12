@@ -1,0 +1,30 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-dotenv==1.0.1
+# pydantic: relaxed from ==2.9.2 to >=2.11.7,<3 because supabase>=2.20.0
+# (via its realtime/storage3 deps) requires pydantic>=2.11.7. FastAPI 0.115.5
+# supports pydantic 2.x, and the code only uses BaseModel/EmailStr/Field
+# (stable across 2.9 -> 2.11+), so this bump is safe.
+pydantic[email]>=2.11.7,<3
+livekit-api==0.8.2
+httpx==0.27.2
+websockets==13.1
+python-multipart==0.0.12
+bcrypt==4.2.1
+pyjwt[crypto]>=2.12.0,<3
+# ^ Bumped from ==2.10.1 because supabase-auth==2.31.0 requires
+#   pyjwt[crypto]>=2.12.0. Backend only uses jwt.encode/decode (stable API).
+# Pinned (was >=2.20.0) for reproducible uv resolution. 2.31.0 is the latest
+# stable; versions <=2.22.2 and 2.23.3 are yanked on PyPI.
+supabase==2.31.0
+# Bumped from 0.30.0 -> 0.31.0 because 0.31.0 adds Python 3.14 support
+# (cp314 wheels). 0.30.0 only ships cp38-cp313 wheels, so it forces a source
+# build on Python 3.14 that fails (Python.h missing + Cython C not 3.14-ready).
+# The backend only uses asyncpg in scripts/init_supabase.py with the stable
+# connect()/execute()/close() API, so the bump is safe.
+asyncpg==0.31.0
+emergentintegrations
+# uv rejects transitive URL deps, so litellm's wheel URL must be a DIRECT
+# requirement. This is exactly the URL emergentintegrations references
+# internally; declaring it here satisfies uv's rule. pip ignores the duplicate.
+litellm @ https://customer-assets.emergentagent.com/internal-asset/library/litellm-1.80.0-py3-none-any.whl

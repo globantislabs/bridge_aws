@@ -1,0 +1,125 @@
+{
+  "theme": "dark_only",
+  "typography": {
+    "headings": {
+      "font_family": "Outfit, sans-serif",
+      "weights": ["300", "500", "700"],
+      "usage": "Use tight letter spacing (tracking-tight) for large headers. Never use Inter for headers."
+    },
+    "body": {
+      "font_family": "IBM Plex Sans, sans-serif",
+      "weights": ["400", "500", "600"],
+      "usage": "Use for all UI text, translations, chat, and inputs."
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-medium tracking-tight text-white",
+      "h2": "text-2xl sm:text-3xl font-medium tracking-tight text-white/90",
+      "h3": "text-xl sm:text-2xl font-medium text-white/90",
+      "body": "text-base text-white/70",
+      "small_labels": "text-xs font-semibold uppercase tracking-[0.2em] text-white/50"
+    }
+  },
+  "colors": {
+    "background": {
+      "void_black": "#050505",
+      "surface_1": "#0E0E0E",
+      "surface_2": "#1A1A1A"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "rgba(255, 255, 255, 0.7)",
+      "muted": "rgba(255, 255, 255, 0.4)"
+    },
+    "accents": {
+      "signal_red": "#FF3B30",
+      "active_cyan": "#00E5FF",
+      "electric_yellow": "#FFD60A"
+    },
+    "borders": {
+      "subtle": "rgba(255, 255, 255, 0.1)",
+      "focus": "rgba(255, 255, 255, 0.3)"
+    },
+    "forbidden_colors": ["#7351B7", "purple", "violet", "teal green", "#1B93A4", "generic gradients"]
+  },
+  "visual_enhancers": {
+    "surfaces": {
+      "milled_crystal": "Used for floating control bars and overlays. bg-white/5 backdrop-blur-2xl backdrop-saturate-150 border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)]",
+      "bento_cards": "Used for side panels and lobby grids. bg-[#0E0E0E] border border-white/5 rounded-2xl"
+    },
+    "video_feeds": {
+      "default": "rounded-2xl border border-white/10 bg-black overflow-hidden relative",
+      "active_speaker": "border-2 border-active_cyan shadow-[inset_0_0_20px_rgba(0,229,255,0.2)]"
+    },
+    "captions": {
+      "style": "Floating subtitles over video. bg-black/60 backdrop-blur-md px-6 py-3 rounded-full text-white/90 font-medium border border-white/10 shadow-lg text-lg text-center"
+    }
+  },
+  "grids": {
+    "bento_lobby": "grid-cols-1 lg:grid-cols-12 gap-8. Camera preview col-span-8, Form/Settings col-span-4",
+    "video_gallery": "grid gap-4 w-full h-full p-4 (auto-fit or auto-fill based on participants)"
+  },
+  "layouts": {
+    "meeting_room": "h-screen w-screen overflow-hidden bg-void_black flex flex-col",
+    "main_stage": "flex-1 flex overflow-hidden relative",
+    "side_panel": "w-80 h-full bg-surface_1 border-l border-white/5 flex flex-col",
+    "control_bar": "absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 p-2 rounded-2xl milled_crystal z-50"
+  },
+  "motion": {
+    "hover": "transition-all duration-300 ease-out",
+    "click": "active:scale-95 transition-transform duration-100",
+    "entrance": "animate-in fade-in slide-in-from-bottom-4 duration-500",
+    "panel_slide": "animate-in slide-in-from-right-full duration-300 ease-out"
+  },
+  "accessibility": {
+    "contrast": "Ensure text meets APCA standards. Use white text over dark backgrounds.",
+    "focus": "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 focus-visible:ring-offset-2 focus-visible:ring-offset-void_black",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='mute-button')"
+  },
+  "media": {
+    "icons": "Use lucide-react. Stroke width 1.5 for a sophisticated, crisp look.",
+    "video_placeholders": "Use object-cover for participant avatars when video is off."
+  },
+  "image_urls": {
+    "landing_hero": {
+      "url": "https://images.unsplash.com/photo-1616587226960-4a03badbe8bf?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjB0ZWFtJTIwdmlkZW8lMjBjYWxsfGVufDB8fHx8MTc4MzY2NTA0Mnww&ixlib=rb-4.1.0&q=85",
+      "description": "Professional team video call on laptop",
+      "placement": "Landing page hero section"
+    },
+    "avatars": {
+      "user_1": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHNpbmdsZSUyMHBlcnNvbnxlbnwwfHx8fDE3ODM2NjUwNTZ8MA&ixlib=rb-4.1.0&q=85",
+      "user_2": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHNpbmdsZSUyMHBlcnNvbnxlbnwwfHx8fDE3ODM2NjUwNTZ8MA&ixlib=rb-4.1.0&q=85",
+      "user_3": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHNpbmdsZSUyMHBlcnNvbnxlbnwwfHx8fDE3ODM2NjUwNTZ8MA&ixlib=rb-4.1.0&q=85",
+      "user_4": "https://images.unsplash.com/photo-1701096374092-bb70915fdc5c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHNpbmdsZSUyMHBlcnNvbnxlbnwwfHx8fDE3ODM2NjUwNTZ8MA&ixlib=rb-4.1.0&q=85"
+    },
+    "logos": {
+      "abstract_1": "https://images.unsplash.com/photo-1707054437518-dfd402977b03?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwzfHxtaW5pbWFsJTIwYWJzdHJhY3QlMjBsb2dvJTIwd2hpdGUlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4MzY2NTA0Mnww&ixlib=rb-4.1.0&q=85"
+    }
+  },
+  "component_path": {
+    "ui_components": "/app/frontend/src/components/ui"
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the E1 anti-AI design patterns: Avoid purple gradients, standard inter headings, and flat uninspired cards.",
+    "Build a completely dark-themed UI. Ensure background is near void-black (#050505).",
+    "Implement Milled Crystal (glassmorphism) strictly as defined in visual_enhancers for the meeting control bar so it floats over the video.",
+    "Build the Pre-join lobby using a Bento grid layout (asymmetry is key here).",
+    "In the meeting room, build a dynamic CSS Grid for the video gallery that responds to the number of participants.",
+    "Integrate live translation subtitles overlaying the video feed elegantly using the captions style provided.",
+    "Make sure forms and inputs (Shadcn customized) use high-contrast borders and clear focus states.",
+    "Add 'data-testid' to every interactive element (mute button, end call, send chat, join meeting, etc.)."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this.",
+    "DO NOT use dark colors as gradients. Use solid dark colors with subtle borders and shadows.",
+    "Create depth through layered design elements with z-index hierarchy (e.g., control bar floats over video).",
+    "Use glass-morphism effects with backdrop filters (12-24px blur, high saturation) specifically for overlays.",
+    "You MUST NOT apply universal transition (e.g. `transition: all`). Apply it specifically to transform, opacity, colors.",
+    "You MUST NOT center align the app container in CSS.",
+    "Use modern button styles like pill-shaped, or sharp buttons with interaction animations.",
+    "NEVER use AI assistant Emoji characters (\ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf) for icons. Use lucide-react.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Use sonner for toast notifications.",
+    "Prioritize using pre-existing components from src/components/ui when applicable."
+  ]
+}

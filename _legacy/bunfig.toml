@@ -1,0 +1,18 @@
+# Bun install configuration — mirrors .npmrc settings.
+# See https://bun.sh/docs/runtime/bunfig
+
+[install]
+# Use the official Prisma binaries mirror to avoid ECONNRESET during
+# @prisma/engines postinstall (the default host is often slow).
+# Bun reads PRISMA_ENGINES_MIRROR from the environment OR from .npmrc.
+# We set it here too for belt-and-suspenders.
+[install.scopes]
+
+[install.cache]
+# Disable offline cache hard-fail — if an engine download fails, retry
+# instead of crashing the whole install.
+disable = false
+
+[install.lockfile]
+# Keep bun.lock versioned for reproducible installs
+save = true

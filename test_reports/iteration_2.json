@@ -1,0 +1,27 @@
+{
+  "summary": "Bridge v2 full-stack testing. Backend pytest: 21/21 passing including auth (register/login/me/logout/google-invalid), plans (Free/Pro/Enterprise correct prices), Stripe checkout (free activates plan; Pro creates real session_id + Stripe URL, status endpoint works), admin RBAC (401 unauth, 403 non-admin), admin users (role toggle, refuse-demote/disable fixed admin, plan assign), providers (list+key set/mask/clear, active provider), plans CRUD (default protected, custom deletable), transcripts (add/list/download text/plain with Content-Disposition attachment), real OpenAI translate en->es ('hola'), Realtime session (ek_ token). Frontend Playwright: Landing renders new SaaS layout with all 5 hero testids, 10 language chips, and CTA buttons. Login page has all 5 required testids (email/password/submit/google/link). Register creates a user and redirects to /dashboard which shows host/join/view-plans testids + plan + usage stats. Admin login as admin@bridge.app auto-navigates to /admin (4 tabs all present: usage/users/providers/plans). Providers tab shows provider-key-input-prov_openai + provider-save-key-prov_openai. Plans tab has admin-add-plan-btn. Pricing shows 3 plan cards with Pro highlighted; clicking Choose plan on Pro while authenticated makes POST /api/checkout/session and redirects to real checkout.stripe.com URL. Mobile viewport (390x844): nav-mobile-toggle visible; opening shows Pricing/Sign in/Get started. Lobby /j/:code loads with 10 language buttons (Chrome fake-camera path). Guest flow: Landing create-meeting-btn works without auth.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_bridge_v2.py",
+    "/app/backend/tests/test_backend.py",
+    "/app/test_reports/pytest/pytest_v2_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 1180 lines — over the 700-line guideline. Should be split into modules (auth, admin, checkout, transcripts, translation) for maintainability.",
+    "CORS still allow_origins=['*'] with allow_credentials=True — browsers will reject credentialed requests when Origin echo hits '*'. Currently works because backend echoes the origin, but this is fragile. Should list explicit origins.",
+    "JWT logout is not truly revocable — only cookie is cleared, but Bearer JWT remains valid for 7 days if the client held it. Consider a token-blocklist or shorter TTL.",
+    "provider_keys collection stores API keys in plaintext — should be encrypted at rest, or at minimum masked in the DB backup path.",
+    "stripe webhook doesn't verify signature strictly — it swallows exceptions and returns 200; a malicious caller cannot upgrade plans (needs matching payment_transaction) but noisy error path could hide real webhook failures.",
+    "/api/rooms/{code}/transcript POST is unauthenticated and unrate-limited — anyone with a room code can spam transcript entries.",
+    "checkout success_url is built from user-supplied 'origin' string — validate against a whitelist to prevent open-redirect on the Stripe success URL."
+  ],
+  "updated_files": ["/app/backend/tests/test_bridge_v2.py"],
+  "success_rate": {"backend": "100% (21/21 v2 + 10/10 v1)", "frontend": "100% of tested flows"},
+  "test_credentials": "Fixed admin admin@bridge.app / BridgeAdmin2026! (auto-seeded, confirmed working)",
+  "seed_data_creation": "Registered TEST_user_* accounts via /api/auth/register, created TEST_Custom plan (deleted), created TEST_Transcript room, several TEST_Lobby rooms. provider_keys collection was empty before tests, briefly set + cleared during tests; ends empty so /api/translate uses env OPENAI_API_KEY.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Two test files exist: /app/backend/tests/test_backend.py (v1 core APIs) and /app/backend/tests/test_bridge_v2.py (auth/admin/checkout/transcripts). Both use real OpenAI (small $$$ cost per run) and real Stripe test-mode. Do not complete the Stripe payment — session creation is enough. Google OAuth end-to-end needs a human; verified backend rejects invalid session_id with 401. Perm-error in Lobby cannot be triggered under Chrome fake-media — verified selectors exist in code path only. Fixed admin cannot be demoted or disabled — enforced by backend."
+}

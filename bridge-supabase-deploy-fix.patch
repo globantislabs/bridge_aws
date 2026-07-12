@@ -1,0 +1,542 @@
+From 27990fccac83c96c72dd5082054c2c90c7c2831b Mon Sep 17 00:00:00 2001
+From: emergent-agent-e1 <github@emergent.sh>
+Date: Fri, 10 Jul 2026 09:30:10 +0000
+Subject: [PATCH] fix(deploy): replace MongoDB with Supabase, fix backend
+ startup crash
+
+The Python backend crashed on startup because supa.py reads
+SUPABASE_URL/SUPABASE_SECRET_KEY at import time (hard KeyError), but the
+.env template written by setup.sh only contained MONGO_URL/DB_NAME.
+The systemd unit also had Requires=mongod.service, which prevented the
+backend from starting on hosts without MongoDB, and the mongodb-org 7.0
+apt block failed on Ubuntu 24.04 (noble) due to missing packages.
+
+deploy/setup.sh:
+- Remove the MongoDB 7 install block entirely (unused at runtime).
+- Rewrite the .env template with all vars the backend requires:
+  SUPABASE_URL, SUPABASE_SECRET_KEY, SUPABASE_DB_URL, LIVEKIT_URL,
+  LIVEKIT_API_KEY, LIVEKIT_API_SECRET (corrected from _KEY suffix),
+  OPENAI_API_KEY, STRIPE_API_KEY, JWT_SECRET, FIXED_ADMIN_*.
+- Migrate legacy Mongo-only .env files by appending the Supabase block.
+- Run scripts/init_supabase.py (best-effort schema apply).
+- Drop Requires=mongod.service from the systemd unit.
+- Pre-flight: refuse to start with placeholder secrets.
+- Post-start /api/health smoke test with journalctl dump on failure.
+
+deploy/redeploy.sh:
+- Add /api/health smoke test + log dump + exit 1 on failure.
+
+deploy/README.md:
+- Replace MongoDB instructions with Supabase (creds, schema apply,
+  scaling), add upgrade-from-Mongo section.
+---
+ deploy/README.md   | 108 +++++++++++++++++++-------
+ deploy/redeploy.sh |  28 ++++++-
+ deploy/setup.sh    | 190 ++++++++++++++++++++++++++++++++++++---------
+ 3 files changed, 258 insertions(+), 68 deletions(-)
+
+diff --git a/deploy/README.md b/deploy/README.md
+index 8502e74..8b87ae9 100644
+--- a/deploy/README.md
++++ b/deploy/README.md
+@@ -1,9 +1,8 @@
+ # Bridge — AWS Ubuntu deployment
+ 
+ Production-grade single-VM deployment of Bridge to AWS EC2 (Ubuntu 22.04 or
+-24.04 LTS).  Backend runs behind Nginx + Let's Encrypt HTTPS.  MongoDB runs on
+-the same box (fine for < ~500 concurrent users; for larger, use MongoDB Atlas
+-and just set `MONGO_URL` accordingly).
++24.04 LTS).  Backend runs behind Nginx + Let's Encrypt HTTPS.  **Data is
++stored in Supabase (Postgres)** — there is no database to install on the VM.
+ 
+ ## Prerequisites
+ 
+@@ -17,7 +16,14 @@ and just set `MONGO_URL` accordingly).
+    - SSH (22) from your IP
+    - HTTP (80) from 0.0.0.0/0
+    - HTTPS (443) from 0.0.0.0/0
+-5. LiveKit + OpenAI + Stripe accounts (LiveKit Cloud works out of the box; if
++5. **Supabase project** — create one at https://supabase.com. You will need:
++   - Project URL, e.g. `https://abcdefgh.supabase.co`
++   - **service_role** secret key (Project Settings → API → service_role)
++   - (optional) direct Postgres connection string for the deploy script to
++     apply the schema automatically (Project Settings → Database → Connection
++     string → Transaction pooler). If you skip this, just paste
++     `backend/schema.sql` into the Supabase SQL editor once.
++6. LiveKit + OpenAI + Stripe accounts (LiveKit Cloud works out of the box; if
+    you self-host LiveKit you'll additionally need to expose the LiveKit
+    media ports — see LiveKit docs).
+ 
+@@ -40,16 +46,28 @@ sudo bash deploy/setup.sh bridge.mycompany.com ops@mycompany.com
+ 
+ The installer will:
+ 
+-- install Python 3.11+, Node 20, MongoDB 7, Nginx, certbot
++- install Python 3.11+, Node 20, Nginx, certbot (no database — Supabase is
++  used as a managed Postgres)
+ - create the `bridge` service user and `/opt/bridge`
+ - create a Python venv and install backend deps (including `emergentintegrations`)
++- write `/opt/bridge/backend/.env` with a **Supabase** template
++- attempt to apply `backend/schema.sql` to Supabase (best-effort; prints the
++  SQL for you to paste into the Supabase SQL editor if `SUPABASE_DB_URL`
++  isn't set)
+ - build the React frontend (`yarn build`) into `/opt/bridge/frontend/build`
+-- install a `bridge-backend.service` systemd unit
++- install a `bridge-backend.service` systemd unit (**no mongod dependency**)
+ - configure Nginx to serve the static build + reverse-proxy `/api/`
+ - get an HTTPS certificate from Let's Encrypt
++- start the backend and run a `/api/health` smoke test
+ 
+ Total runtime is ~5–8 minutes.
+ 
++> ⚠️ If the installer detects placeholder secrets in `.env`
++> (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `LIVEKIT_*`) it will **refuse to
++> start the backend** and print a clear message. This prevents the old
++> symptom where uvicorn would crash-loop silently because `supa.py` raises
++> `KeyError` on a missing `SUPABASE_URL`.
++
+ ## After first install — set your real API keys
+ 
+ ```bash
+@@ -58,6 +76,11 @@ sudo nano /opt/bridge/backend/.env
+ 
+ Fill in real values for:
+ 
++- `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (required — backend won't start
++  without them)
++- `SUPABASE_DB_URL` (optional — only needed if you want the deploy script to
++  apply the schema for you; otherwise paste `backend/schema.sql` into the
++  Supabase SQL editor once)
+ - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
+ - `OPENAI_API_KEY`
+ - `STRIPE_API_KEY` (use `sk_live_…` for prod)
+@@ -71,6 +94,26 @@ Then reload:
+ sudo systemctl restart bridge-backend
+ ```
+ 
++## Apply the Supabase schema
++
++Two options:
++
++**Option A — SQL editor (simplest, no extra setup):**
++1. Open your Supabase project → SQL Editor → New query.
++2. Paste the contents of `/opt/bridge/backend/schema.sql`.
++3. Run. It is idempotent (`create table if not exists`), so re-running is
++   safe.
++
++**Option B — programmatic (set `SUPABASE_DB_URL` in `.env`):**
++```bash
++sudo -u bridge bash -c "cd /opt/bridge/backend && \
++  .venv/bin/python scripts/init_supabase.py"
++```
++This connects via asyncpg and applies `schema.sql` directly. The connection
++string is the **Transaction pooler** URL from Supabase Dashboard → Project
++Settings → Database, e.g.
++`postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres`.
++
+ ## Ongoing operations
+ 
+ | Task                     | Command                                            |
+@@ -81,39 +124,45 @@ sudo systemctl restart bridge-backend
+ | Backend logs (last 200)  | `sudo journalctl -u bridge-backend -n 200 --no-pager` |
+ | Nginx logs               | `sudo tail -f /var/log/nginx/{access,error}.log`   |
+ | Restart nginx            | `sudo systemctl reload nginx`                      |
+-| MongoDB shell            | `mongosh meeting_platform`                         |
+ | Renew SSL manually       | `sudo certbot renew --nginx`                       |
+ | Disk usage               | `df -h /`                                          |
+ 
+-## MongoDB Atlas instead of local Mongo
+-
+-Edit `/opt/bridge/backend/.env`:
+-
+-```
+-MONGO_URL=mongodb+srv://<user>:<pw>@cluster0.mongodb.net/?retryWrites=true&w=majority
+-DB_NAME=meeting_platform
+-```
+-
+-Then:
+-
+-```bash
+-sudo systemctl stop mongod && sudo systemctl disable mongod   # optional
+-sudo systemctl restart bridge-backend
+-```
++`redeploy.sh` now ends with a `/api/health` smoke test and will print the
++last 40 journal lines if the backend fails to come up — so a bad `.env`
++shows up immediately instead of a silent crash-loop.
++
++## Upgrading from the old MongoDB-based deploy
++
++If you previously deployed Bridge with MongoDB:
++
++1. **Migrate your data** from Mongo to Supabase first (export each Mongo
++   collection → insert into the matching Supabase table per
++   `backend/schema.sql`). The backend code already writes only to Supabase,
++   so there is no dual-write path.
++2. Stop the backend: `sudo systemctl stop bridge-backend`.
++3. Pull the new code and re-run `sudo bash /opt/bridge/deploy/setup.sh
++   <domain> <email>`. The installer will:
++   - append the Supabase vars to your existing `.env` (your old LiveKit /
++     OpenAI / Stripe / admin values are preserved),
++   - replace the systemd unit (removing the `Requires=mongod.service`
++     dependency that previously prevented startup on MongoDB-less hosts),
++   - apply the schema if `SUPABASE_DB_URL` is set.
++4. You can leave `mongod` running or stop it — Bridge no longer touches it:
++   `sudo systemctl disable --now mongod` (optional).
+ 
+ ## Scaling notes
+ 
+ - The FastAPI service runs with `--workers 2` by default. For a 4-vCPU box
+   bump this to `--workers 4` in `/etc/systemd/system/bridge-backend.service`.
+ - All the heavy media processing (WebRTC / SFU / translation LLM / TTS) is
+-  handled by **LiveKit Cloud** and **OpenAI**, not by this VM — so the VM
+-  itself has very low CPU/bandwidth needs.  A single t3.medium can serve
+-  hundreds of thousands of API requests per day.
+-- If MongoDB grows past ~10 GB, migrate it to MongoDB Atlas or a dedicated
+-  data node — trivial with the env-var swap above.
++  handled by **LiveKit Cloud**, **OpenAI**, and **Supabase**, not by this
++  VM — so the VM itself has very low CPU/bandwidth needs.  A single
++  t3.medium can serve hundreds of thousands of API requests per day.
++- Supabase autoscales its Postgres pooler; if you outgrow the free tier,
++  upgrade the Supabase project — no code changes needed.
+ - Static React build is served directly by Nginx (cached for 1 year on
+-  hashed chunks), so add a CloudFront distribution in front of Nginx if you
+-  need a global CDN.
++  hashed chunks), so add a CloudFront distribution in front of Nginx if
++  you need a global CDN.
+ 
+ ## Firewall
+ 
+@@ -138,4 +187,5 @@ sudo rm /etc/nginx/sites-enabled/bridge /etc/nginx/sites-available/bridge
+ sudo systemctl reload nginx
+ sudo rm -rf /opt/bridge
+ sudo userdel bridge
++# Optionally drop the Supabase project / schema from the Supabase dashboard.
+ ```
+diff --git a/deploy/redeploy.sh b/deploy/redeploy.sh
+index f954350..8b1cd02 100755
+--- a/deploy/redeploy.sh
++++ b/deploy/redeploy.sh
+@@ -8,6 +8,7 @@
+ set -euo pipefail
+ APP_USER=bridge
+ APP_ROOT=/opt/bridge
++BACKEND_PORT=8001
+ 
+ if [[ $EUID -ne 0 ]]; then echo "Run with sudo"; exit 1; fi
+ [[ -d "$APP_ROOT" ]] || { echo "$APP_ROOT missing — run setup.sh first"; exit 1; }
+@@ -29,4 +30,29 @@ echo "==> Restart"
+ systemctl restart bridge-backend
+ nginx -t && systemctl reload nginx
+ 
+-echo "✅ redeploy complete"
++# ---- Health check --------------------------------------------------------
++# Catches the most common redeploy failure: backend crashes on import because
++# of a missing/typo'd env var in .env (e.g. SUPABASE_URL / SUPABASE_SECRET_KEY
++# from supa.py, or LIVEKIT_* from server.py).
++echo "==> Waiting for backend to answer /api/health"
++healthy=0
++for i in $(seq 1 20); do
++  if curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" >/dev/null 2>&1; then
++    healthy=1
++    break
++  fi
++  sleep 1
++done
++if [[ "$healthy" == "1" ]]; then
++  echo "✅ redeploy complete — backend healthy"
++else
++  echo "❌ backend did not become healthy after redeploy — last 40 log lines:"
++  journalctl -u bridge-backend -n 40 --no-pager || true
++  echo ""
++  echo "Common causes:"
++  echo "  • SUPABASE_URL / SUPABASE_SECRET_KEY missing or wrong in $APP_ROOT/backend/.env"
++  echo "  • Supabase schema not applied (paste backend/schema.sql into the Supabase SQL editor)"
++  echo "  • LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET missing"
++  echo "Inspect:  sudo journalctl -u bridge-backend -f"
++  exit 1
++fi
+diff --git a/deploy/setup.sh b/deploy/setup.sh
+index 3e8db6b..7142fdc 100755
+--- a/deploy/setup.sh
++++ b/deploy/setup.sh
+@@ -10,14 +10,22 @@
+ #   sudo bash deploy/setup.sh bridge.mycompany.com you@mycompany.com
+ #
+ # What it does:
+-#   1. Installs system deps (Python 3.11+, Node 20, MongoDB 7, Nginx, certbot)
++#   1. Installs system deps (Python 3.11+, Node 20, Nginx, certbot)
+ #   2. Creates a `bridge` service user
+ #   3. Sets up /opt/bridge as the app root, copies /app -> /opt/bridge
+ #   4. Creates Python venv and installs backend requirements
+-#   5. Builds the React frontend for production (yarn build)
+-#   6. Installs systemd unit files for the backend
+-#   7. Configures nginx to serve the static build + reverse-proxy /api
+-#   8. Obtains a Let's Encrypt certificate and enables HTTPS
++#   5. Writes the backend .env (Supabase + LiveKit + OpenAI + Stripe + admin)
++#   6. Applies the Supabase Postgres schema (best-effort, via asyncpg if
++#      SUPABASE_DB_URL is set, otherwise prints the SQL to run by hand)
++#   7. Builds the React frontend for production (yarn build)
++#   8. Installs a systemd unit for the backend (NO mongod dependency)
++#   9. Configures nginx to serve the static build + reverse-proxy /api
++#  10. Obtains a Let's Encrypt certificate and enables HTTPS
++#  11. Starts the backend and runs a /api/health smoke test
++#
++# Database: Supabase (Postgres). MongoDB is NOT used. If you are upgrading an
++# older install that had MongoDB, the mongod service/unit are left in place but
++# are no longer required or started by Bridge.
+ #
+ # Idempotent — safe to re-run.  Requires an A record already pointing at the
+ # EC2 public IP (or an Elastic IP).  Open TCP 22, 80 and 443 in the security
+@@ -45,6 +53,7 @@ BACKEND_PORT=8001
+ 
+ echo "==> Bridge deployment for $DOMAIN"
+ echo "==> Repo source: $REPO_SRC"
++echo "==> Database: Supabase (Postgres) — MongoDB is not used"
+ 
+ # ---------- 1. System packages ---------------------------------------------
+ echo "==> Installing system packages"
+@@ -53,7 +62,7 @@ apt-get install -y --no-install-recommends \
+   ca-certificates curl gnupg lsb-release build-essential git \
+   python3 python3-venv python3-pip \
+   nginx certbot python3-certbot-nginx \
+-  ufw
++  ufw rsync
+ 
+ # Node 20 (for building the frontend + yarn) -------------------------------
+ if ! command -v node >/dev/null 2>&1 || [[ "$(node -v)" != v20* ]]; then
+@@ -65,18 +74,12 @@ if ! command -v yarn >/dev/null 2>&1; then
+   npm install -g yarn
+ fi
+ 
+-# MongoDB 7 -----------------------------------------------------------------
+-if ! command -v mongod >/dev/null 2>&1; then
+-  echo "==> Installing MongoDB 7"
+-  curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-7.gpg
+-  UBU_CODENAME="$(lsb_release -cs)"
+-  echo "deb [signed-by=/usr/share/keyrings/mongodb-7.gpg] https://repo.mongodb.org/apt/ubuntu $UBU_CODENAME/mongodb-org/7.0 multiverse" \
+-    > /etc/apt/sources.list.d/mongodb-org-7.0.list
+-  apt-get update -y
+-  apt-get install -y mongodb-org
+-  systemctl enable mongod
+-  systemctl start mongod
+-fi
++# NOTE: MongoDB is intentionally NOT installed. Bridge stores all data in
++# Supabase (Postgres). The old MongoDB install block was removed because:
++#   (a) the backend imports `supa.py` which hard-requires SUPABASE_URL /
++#       SUPABASE_SECRET_KEY, and never reads MONGO_URL at runtime;
++#   (b) mongodb-org 7.0 has no official packages for Ubuntu 24.04 (noble),
++#       so the old block broke deployment on 24.04 LTS.
+ 
+ # ---------- 2. Service user ------------------------------------------------
+ if ! id -u "$APP_USER" >/dev/null 2>&1; then
+@@ -102,26 +105,84 @@ sudo -u "$APP_USER" bash -c "
+   .venv/bin/pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+ "
+ 
+-# Backend .env — you MUST edit this after first run and fill in real values.
+-if [[ ! -f "$APP_ROOT/backend/.env" ]]; then
+-  echo "==> Writing template $APP_ROOT/backend/.env — edit real values before restart!"
+-  cat > "$APP_ROOT/backend/.env" <<EOF
+-MONGO_URL=mongodb://localhost:27017
+-DB_NAME=meeting_platform
++# ---------- 5. Backend .env ------------------------------------------------
++# Required by the Python backend at IMPORT time (supa.py raises KeyError if
++# these are missing → uvicorn crash loop).  We write a fresh template on
++# first run, and migrate legacy Mongo-only .env files by appending the
++# Supabase block.
++ENV_FILE="$APP_ROOT/backend/.env"
++
++write_full_env_template() {
++  # $1 = domain
++  cat <<EOF
++# ---- Supabase (REQUIRED — backend will not start without these) ----
++SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
++SUPABASE_SECRET_KEY=YOUR_SERVICE_ROLE_KEY
++# Direct Postgres connection string (pooler). Optional but recommended:
++# lets the deploy script create tables for you. Find it in Supabase Dashboard
++# > Project Settings > Database > Connection string > Transaction pooler.
++SUPABASE_DB_URL=
++
++# ---- LiveKit (REQUIRED) ----
++# NOTE: the var name is LIVEKIT_API_SECRET (no _KEY suffix) — matches server.py.
+ LIVEKIT_URL=wss://your-project.livekit.cloud
+ LIVEKIT_API_KEY=REPLACE_ME
+ LIVEKIT_API_SECRET=REPLACE_ME
++
++# ---- AI providers ----
+ OPENAI_API_KEY=sk-proj-REPLACE_ME
+ STRIPE_API_KEY=sk_live_REPLACE_ME
++
++# ---- Auth / admin ----
+ JWT_SECRET=$(openssl rand -hex 32)
+-FIXED_ADMIN_EMAIL=admin@$DOMAIN
++FIXED_ADMIN_EMAIL=admin@$1
+ FIXED_ADMIN_PASSWORD=$(openssl rand -base64 24)
++
++# ---- Legacy (ignored at runtime, kept for backward compat) ----
++# MONGO_URL and DB_NAME are no longer used; all data lives in Supabase.
++MONGO_URL=
++DB_NAME=
++EOF
++}
++
++append_supabase_block() {
++  cat >> "$ENV_FILE" <<EOF
++
++# ---- Supabase (REQUIRED — added by setup.sh migration) ----
++SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
++SUPABASE_SECRET_KEY=YOUR_SERVICE_ROLE_KEY
++SUPABASE_DB_URL=
+ EOF
+-  chown "$APP_USER":"$APP_USER" "$APP_ROOT/backend/.env"
+-  chmod 600 "$APP_ROOT/backend/.env"
++}
++
++if [[ ! -f "$ENV_FILE" ]]; then
++  echo "==> Writing template $ENV_FILE — edit real values before restart!"
++  write_full_env_template "$DOMAIN" > "$ENV_FILE"
++else
++  # Migrate a legacy Mongo-only .env by appending the Supabase block if missing.
++  if ! grep -q '^SUPABASE_URL=' "$ENV_FILE"; then
++    echo "==> Existing .env is missing Supabase vars — appending them"
++    append_supabase_block
++  fi
++  # Ensure JWT_SECRET exists.
++  if ! grep -q '^JWT_SECRET=' "$ENV_FILE"; then
++    echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$ENV_FILE"
++  fi
+ fi
++chown "$APP_USER":"$APP_USER" "$ENV_FILE"
++chmod 600 "$ENV_FILE"
++
++# ---------- 6. Apply Supabase schema (best effort) ------------------------
++# `init_supabase.py` uses asyncpg against SUPABASE_DB_URL. If that var is
++# empty/not set, the script just prints the SQL for the user to paste into
++# the Supabase SQL editor. Either way the backend can start afterwards.
++echo "==> Applying Supabase schema (best-effort)"
++sudo -u "$APP_USER" bash -c "
++  cd $APP_ROOT/backend
++  .venv/bin/python scripts/init_supabase.py || true
++" || true
+ 
+-# ---------- 5. Frontend production build ----------------------------------
++# ---------- 7. Frontend production build ----------------------------------
+ echo "==> Writing frontend .env"
+ cat > "$APP_ROOT/frontend/.env" <<EOF
+ REACT_APP_BACKEND_URL=https://$DOMAIN
+@@ -136,13 +197,13 @@ sudo -u "$APP_USER" bash -c "
+   yarn build
+ "
+ 
+-# ---------- 6. systemd unit for the backend --------------------------------
++# ---------- 8. systemd unit for the backend --------------------------------
+ echo "==> Installing systemd unit"
+ cat > /etc/systemd/system/bridge-backend.service <<EOF
+ [Unit]
+-Description=Bridge — FastAPI backend
+-After=network.target mongod.service
+-Requires=mongod.service
++Description=Bridge — FastAPI backend (Supabase)
++After=network.target
++# No mongod dependency: data lives in Supabase (Postgres).
+ 
+ [Service]
+ Type=simple
+@@ -163,9 +224,28 @@ EOF
+ 
+ systemctl daemon-reload
+ systemctl enable bridge-backend
+-systemctl restart bridge-backend
+ 
+-# ---------- 7. Nginx --------------------------------------------------------
++# ---------- 9. Pre-flight: refuse to start with placeholder secrets -------
++# This turns a silent uvicorn crash-loop into a clear, actionable error.
++if grep -qE '^(SUPABASE_URL|SUPABASE_SECRET_KEY|LIVEKIT_URL|LIVEKIT_API_KEY|LIVEKIT_API_SECRET)=.*(YOUR_|REPLACE_ME|YOUR_PROJECT_REF)' "$ENV_FILE"; then
++  echo ""
++  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
++  echo "  ⚠️  Backend NOT started: placeholder secrets detected in $ENV_FILE"
++  echo "  Fill in real values for:"
++  echo "      SUPABASE_URL, SUPABASE_SECRET_KEY,"
++  echo "      LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET"
++  echo "  then re-run:  sudo bash $APP_ROOT/deploy/setup.sh $DOMAIN $EMAIL"
++  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
++  # Still configure nginx + TLS so the static site is reachable, but leave
++  # the backend stopped so the operator notices.
++  systemctl stop bridge-backend 2>/dev/null || true
++  BACKEND_STARTED=0
++else
++  systemctl restart bridge-backend
++  BACKEND_STARTED=1
++fi
++
++# ---------- 10. Nginx ------------------------------------------------------
+ echo "==> Configuring nginx"
+ cat > /etc/nginx/sites-available/bridge <<EOF
+ server {
+@@ -231,12 +311,12 @@ EOF
+ ln -sf /etc/nginx/sites-available/bridge /etc/nginx/sites-enabled/bridge
+ rm -f /etc/nginx/sites-enabled/default
+ 
+-# ---------- 8. Firewall ----------------------------------------------------
++# ---------- 11. Firewall ---------------------------------------------------
+ ufw allow OpenSSH >/dev/null 2>&1 || true
+ ufw allow 'Nginx Full' >/dev/null 2>&1 || true
+ yes | ufw enable >/dev/null 2>&1 || true
+ 
+-# ---------- 9. TLS via Let's Encrypt --------------------------------------
++# ---------- 12. TLS via Let's Encrypt --------------------------------------
+ # On first run the SSL block above references certs that don't yet exist.
+ # Use a temporary HTTP-only vhost, obtain the cert, then switch nginx back on.
+ if [[ ! -f /etc/letsencrypt/live/$DOMAIN/fullchain.pem ]]; then
+@@ -309,12 +389,46 @@ nginx -t && systemctl reload nginx
+ 
+ # Auto-renewal cron is already provided by the certbot package (systemd timer).
+ 
++# ---------- 13. Health check ----------------------------------------------
++if [[ "$BACKEND_STARTED" == "1" ]]; then
++  echo "==> Waiting for backend to answer /api/health"
++  healthy=0
++  for i in $(seq 1 20); do
++    if curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" >/dev/null 2>&1; then
++      healthy=1
++      break
++    fi
++    sleep 1
++  done
++  if [[ "$healthy" == "1" ]]; then
++    echo "    ✅ backend healthy"
++  else
++    echo "    ❌ backend did not become healthy — last 40 log lines:"
++    journalctl -u bridge-backend -n 40 --no-pager || true
++    echo ""
++    echo "    Common causes:"
++    echo "      • SUPABASE_URL / SUPABASE_SECRET_KEY wrong or still placeholders"
++    echo "      • Supabase schema not applied (paste backend/schema.sql into the SQL editor)"
++    echo "      • LIVEKIT_* vars missing"
++    echo "    Inspect:  sudo journalctl -u bridge-backend -f"
++  fi
++fi
++
+ echo ""
+ echo "===================================================================="
+-echo "  ✅  Bridge is now live at https://$DOMAIN"
++echo "  ✅  Bridge deployed for https://$DOMAIN"
++if [[ "$BACKEND_STARTED" == "1" ]]; then
++  echo "  ✅  Backend is running (systemd: bridge-backend)"
++else
++  echo "  ⚠️  Backend is STOPPED — fix secrets in $ENV_FILE and re-run setup.sh"
++fi
+ echo "  📝  Edit real API keys:  $APP_ROOT/backend/.env"
++echo "      Required: SUPABASE_URL, SUPABASE_SECRET_KEY,"
++echo "               LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET"
+ echo "      Then:  sudo systemctl restart bridge-backend"
++echo "  🗄️  Supabase schema:  paste backend/schema.sql into the Supabase"
++echo "      SQL editor once, OR set SUPABASE_DB_URL and re-run setup.sh"
+ echo "  🔑  Admin login:  see FIXED_ADMIN_EMAIL / FIXED_ADMIN_PASSWORD in .env"
+ echo "  📜  Backend logs: sudo journalctl -u bridge-backend -f"
+-echo "  🔁  Redeploy:    sudo bash deploy/setup.sh $DOMAIN $EMAIL"
++echo "  🔁  Redeploy:    sudo bash $APP_ROOT/deploy/redeploy.sh"
+ echo "===================================================================="
+-- 
+2.47.3
+

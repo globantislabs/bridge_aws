@@ -1,0 +1,78 @@
+# ============================================================
+#  Bridge — Lightweight docker-compose for AWS t3.nano / t3.micro
+#  Target: bridge.globantislabs.com
+#  Stack:  bridge (Next.js standalone) + caddy (auto-SSL reverse proxy)
+#  Memory: ~150-250MB total (bridge ~150MB, caddy ~30-50MB)
+# ============================================================
+#
+#  Prerequisites (run aws/deploy-t3.sh on EC2 — handles all of this):
+#    - Docker + Docker Compose v2 installed
+#    - 1GB swap file (t3.nano needs it for npm install)
+#    - .env.production configured with real secrets
+#    - DNS A record for bridge.globantislabs.com → EC2 public IP
+#    - Ports 80 + 443 open in EC2 security group
+#
+#  Usage:
+#    docker compose -f docker-compose.t3.yml up -d --build
+#    docker compose -f docker-compose.t3.yml logs -f
+#    docker compose -f docker-compose.t3.yml down
+# ============================================================
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.t3
+    image: bridge:t3
+    container_name: bridge-app
+    restart: unless-stopped
+    expose:
+      - "3000"
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Cap Node heap to leave room for the OS on 0.5GB / 1GB instances
+      - NODE_OPTIONS=--max-old-space-size=384
+    mem_limit: 450m
+    mem_reservation: 200m
+    networks:
+      - bridge-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: bridge-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    volumes:
+      - ./aws/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      # Acme DNS challenge email (Caddy auto-issues cert on first start)
+      - ACME_AGREE=true
+    depends_on:
+      - bridge
+    mem_limit: 100m
+    mem_reservation: 32m
+    networks:
+      - bridge-net
+
+networks:
+  bridge-net:
+    driver: bridge
+
+volumes:
+  caddy-data:       # TLS certs + ACME account (persist across restarts)
+  caddy-config:     # Caddy runtime config

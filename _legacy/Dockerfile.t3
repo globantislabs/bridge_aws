@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1.7
+
+# ============================================================
+#  Bridge — Lightweight Dockerfile for AWS t3.nano / t3.micro
+#  Target: 0.5GB-1GB RAM. Final image ~150MB. Alpine + bun.
+#  Uses bun for installs (lenient peer deps, faster, less RAM)
+#  and node for the build step (Next.js requires node).
+#  Prisma 6.19.2 pinned (v7 breaks url/directUrl).
+# ============================================================
+
+# ---- Stage 1: Install deps with bun (fast, lenient) ----
+# IMPORTANT: bun 1.2+ is required for the new bun.lock text format
+# (lockfileVersion: 1). bun 1.1.x only reads the old bun.lockb binary format.
+FROM oven/bun:1.2-alpine AS deps
+WORKDIR /app
+
+RUN apk add --no-cache openssl libc6-compat
+
+COPY package.json bun.lock ./
+COPY .npmrc ./
+
+# Bun install — lenient with peer deps, faster than npm.
+# `--network-concurrency 4` limits concurrent downloads (default 50) to keep
+# peak memory low on t3.nano (0.5GB RAM).
+# `--no-cache` avoids growing the bun cache during install.
+RUN bun install --frozen-lockfile --network-concurrency 4 --no-cache
+
+# ---- Stage 2: Build with node (Next.js build requires node) ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+RUN apk add --no-cache openssl libc6-compat && \
+    npm install -g bun@1.2.0
+
+# Reuse deps installed by bun
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Generate Prisma client. NEVER use `bunx prisma` or `npx prisma` —
+# both fetch v7 which breaks the schema. Use the pinned local binary.
+RUN ./node_modules/.bin/prisma generate
+
+# Build Next.js (standalone output — required for Docker)
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV NODE_OPTIONS=--max-old-space-size=512
+RUN bun run build
+
+# ---- Stage 3: Runner ----
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+RUN apk add --no-cache openssl libc6-compat curl && \
+    addgroup -S -g 1001 nodejs && \
+    adduser -S -u 1001 -G nodejs nextjs
+
+# Copy standalone build (Next.js produces .next/standalone/server.js)
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+
+# Prisma client + schema (NOT entire node_modules)
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
+
+# Helper scripts
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/preflight.mjs ./scripts/preflight.mjs
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT=3000
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME=0.0.0.0
+ENV NODE_OPTIONS=--max-old-space-size=384
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT:-3000}/api/health" || exit 1
+
+# Pre-flight verifies DB reachable, then start the server.
+CMD ["sh", "-c", "node scripts/preflight.mjs --quiet && node server.js"]

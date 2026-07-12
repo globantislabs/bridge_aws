@@ -1,0 +1,34 @@
+# Bridge — docker-compose for local + small single-instance deployments.
+# For production multi-instance, use AWS App Runner / ECS / k8s (see DEPLOY.md).
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bridge:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      # Persist SQLite DB across container restarts.
+      # Comment out if using Postgres (Supabase).
+      - ./db:/app/db
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Optional: coturn TURN server for WebRTC NAT traversal.
+  # Uncomment + set TURN_URL=turn:turn.example.com:3478 in .env for prod.
+  # turn:
+  #   image: coturn/coturn:latest
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   volumes:
+  #     - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+  #   command: ["-c", "/etc/coturn/turnserver.conf"]
